@@ -1,0 +1,37 @@
+{
+  "name": "myzgoal",
+  "version": "0.1.0",
+  "description": "/goal for PI Agent — set a completion condition and pi keeps working until it's met",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/applearound/myzgoal.git"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "goal",
+    "agent"
+  ],
+  "main": "src/index.ts",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "dependencies": {
+    "typebox": "^1.0.0",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ]
+}
