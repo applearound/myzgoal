@@ -65,6 +65,28 @@ To bound runtime, include a clause in the condition itself, e.g. "…or stop aft
 - **Hard cap**: set `MYZGOAL_MAX_TURNS` to pause the loop after N evaluations.
 - User interrupt (Esc) never triggers an evaluation.
 
+### Configure with /goal-config
+
+Run `/goal-config` to open an interactive settings panel (SettingsList):
+
+| Setting | Meaning |
+| --- | --- |
+| 评估模型 | Evaluator model — pick from authenticated models (cheapest first), or `(auto)` |
+| 评估次数上限 | Pause the loop after N evaluator runs (`unlimited` to disable) |
+| 无进展阈值 | Consecutive tool-less turns before the loop pauses |
+| 写入位置 | Whether edits go to the project or global config file |
+
+Each row shows the effective value and where it comes from.
+
+#### Where settings are persisted
+
+| Level | File | Notes |
+| --- | --- | --- |
+| Project | `<project>/.pi/myzgoal.json` | Only honored for trusted projects; share with the team |
+| Global | `~/.pi/agent/myzgoal.json` | Personal defaults |
+
+Precedence per setting: **env var > project file > global file > built-in default** — same shape as pi's own `settings.json`. Unknown keys in the files are preserved on write. `"evaluatorModel": ""` means auto.
+
 ### Environment variables
 
 | Variable | Default | Meaning |

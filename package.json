@@ -1,6 +1,6 @@
 {
   "name": "myzgoal",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "/goal for PI Agent — set a completion condition and pi keeps working until it's met",
   "type": "module",
   "license": "MIT",
@@ -17,7 +17,9 @@
   ],
   "main": "src/index.ts",
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "dependencies": {
     "typebox": "^1.0.0",
