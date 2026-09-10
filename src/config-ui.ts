@@ -40,9 +40,17 @@ const SOURCE_TAG: Record<ConfigSource, string> = {
 	default: "默认",
 };
 
+/** Model id without the provider prefix — ids may themselves contain "/". */
+function modelIdOnly(full: string): string {
+	const idx = full.indexOf("/");
+	return idx === -1 ? full : full.slice(idx + 1);
+}
+
 function modelDisplay(eff: ReturnType<typeof loadEffectiveConfig>): string {
-	const value = eff.evaluatorModel.value || "自动(最便宜已认证模型)";
-	return `${value} · ${SOURCE_TAG[eff.evaluatorModel.source]}`;
+	const value = eff.evaluatorModel.value;
+	return value
+		? `${modelIdOnly(value)} · ${SOURCE_TAG[eff.evaluatorModel.source]}`
+		: `自动(最便宜已认证模型) · ${SOURCE_TAG[eff.evaluatorModel.source]}`;
 }
 
 function maxTurnsDisplay(eff: ReturnType<typeof loadEffectiveConfig>): string {
@@ -50,12 +58,17 @@ function maxTurnsDisplay(eff: ReturnType<typeof loadEffectiveConfig>): string {
 	return `${value === null ? "unlimited" : String(value)} · ${SOURCE_TAG[eff.maxTurns.source]}`;
 }
 
-function noProgressDisplay(eff: ReturnType<typeof loadEffectiveConfig>): string {
+function noProgressDisplay(
+	eff: ReturnType<typeof loadEffectiveConfig>,
+): string {
 	return `${eff.noProgressLimit.value} · ${SOURCE_TAG[eff.noProgressLimit.source]}`;
 }
 
 /** Model picker submenu: "(auto)" plus authenticated models, cheapest first. */
-function buildModelPicker(ctx: ExtensionContext, done: (selectedValue?: string) => void): Component {
+function buildModelPicker(
+	ctx: ExtensionContext,
+	done: (selectedValue?: string) => void,
+): Component {
 	const theme: Theme = ctx.ui.theme;
 	const models = ctx.modelRegistry
 		.getAvailable()
@@ -67,27 +80,41 @@ function buildModelPicker(ctx: ExtensionContext, done: (selectedValue?: string) 
 		{ value: "", label: "(auto)", description: "自动选择最便宜的已认证模型" },
 		...models.map((m) => ({
 			value: `${m.provider}/${m.id}`,
-			label: `${m.provider}/${m.id}`,
-			description: `input cost ${m.cost.input}`,
+			// Primary column shows the id (the distinctive part); the provider
+			// prefix plus cost live in the description column so long full names
+			// never truncate the id.
+			label: m.id,
+			description: `${m.provider} · input cost ${m.cost.input}`,
 		})),
 	];
 
 	const container = new Container();
 	container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-	container.addChild(new Text(theme.fg("accent", theme.bold("选择评估模型")), 1, 0));
+	container.addChild(
+		new Text(theme.fg("accent", theme.bold("选择评估模型")), 1, 0),
+	);
 
-	const list = new SelectList(items, Math.min(items.length, 12), {
-		selectedPrefix: (t) => theme.fg("accent", t),
-		selectedText: (t) => theme.fg("accent", t),
-		description: (t) => theme.fg("muted", t),
-		scrollInfo: (t) => theme.fg("dim", t),
-		noMatch: (t) => theme.fg("warning", t),
-	});
+	const list = new SelectList(
+		items,
+		Math.min(items.length, 12),
+		{
+			selectedPrefix: (t) => theme.fg("accent", t),
+			selectedText: (t) => theme.fg("accent", t),
+			description: (t) => theme.fg("muted", t),
+			scrollInfo: (t) => theme.fg("dim", t),
+			noMatch: (t) => theme.fg("warning", t),
+		},
+		// Let the primary (id) column grow well beyond the 32-char default;
+		// narrow terminals still clamp it to the available width.
+		{ maxPrimaryColumnWidth: 60 },
+	);
 	list.onSelect = (item) => done(item.value); // "" = auto → key deleted
 	list.onCancel = () => done(undefined);
 	container.addChild(list);
 
-	container.addChild(new Text(theme.fg("dim", "↑↓ 选择 · enter 确认 · esc 取消"), 1, 0));
+	container.addChild(
+		new Text(theme.fg("dim", "↑↓ 选择 · enter 确认 · esc 取消"), 1, 0),
+	);
 	container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
 
 	return {
@@ -106,14 +133,23 @@ export async function openConfig(ctx: ExtensionContext): Promise<void> {
 	let listRef: SettingsList | undefined;
 	let currentEff = loadEffectiveConfig(ctx);
 
+	const evaluatorModelItem: SettingItem = {
+		id: "evaluatorModel",
+		label: "评估模型",
+		description: "独立评估器使用的模型;auto = 最便宜的已认证模型",
+		currentValue: modelDisplay(currentEff),
+		submenu: (_currentValue, done) => buildModelPicker(ctx, done),
+	};
+	/** Keep the full provider/id visible even when the row value is short. */
+	const syncEvaluatorModelDescription = (): void => {
+		evaluatorModelItem.description = currentEff.evaluatorModel.value
+			? `独立评估器模型,完整名: ${currentEff.evaluatorModel.value}`
+			: "独立评估器使用的模型;auto = 最便宜的已认证模型";
+	};
+	syncEvaluatorModelDescription();
+
 	const items: SettingItem[] = [
-		{
-			id: "evaluatorModel",
-			label: "评估模型",
-			description: "独立评估器使用的模型;auto = 最便宜的已认证模型",
-			currentValue: modelDisplay(currentEff),
-			submenu: (_currentValue, done) => buildModelPicker(ctx, done),
-		},
+		evaluatorModelItem,
 		{
 			id: "maxTurns",
 			label: "评估次数上限",
@@ -150,7 +186,9 @@ export async function openConfig(ctx: ExtensionContext): Promise<void> {
 			// "" = auto → delete the key so resolution falls through to cheaper sources.
 			patch = { evaluatorModel: newValue === "" ? undefined : newValue };
 		} else if (id === "maxTurns") {
-			patch = { maxTurns: newValue === "unlimited" ? null : Number.parseInt(newValue, 10) };
+			patch = {
+				maxTurns: newValue === "unlimited" ? null : Number.parseInt(newValue, 10),
+			};
 		} else if (id === "noProgressLimit") {
 			patch = { noProgressLimit: Number.parseInt(newValue, 10) };
 		} else {
@@ -161,6 +199,7 @@ export async function openConfig(ctx: ExtensionContext): Promise<void> {
 			const path = writeConfig(ctx, scope, patch);
 			// Refresh source tags after the write, then push the new display strings.
 			currentEff = loadEffectiveConfig(ctx);
+			syncEvaluatorModelDescription();
 			const displays: Record<string, string> = {
 				evaluatorModel: modelDisplay(currentEff),
 				maxTurns: maxTurnsDisplay(currentEff),
@@ -178,17 +217,29 @@ export async function openConfig(ctx: ExtensionContext): Promise<void> {
 
 	await ctx.ui.custom((_tui, theme, _kb, done) => {
 		const container = new Container();
-		container.addChild(new Text(theme.fg("accent", theme.bold("myzgoal 设置")), 1, 0));
+		container.addChild(
+			new Text(theme.fg("accent", theme.bold("myzgoal 设置")), 1, 0),
+		);
 
-		const settingsList = new SettingsList(items, items.length + 2, getSettingsListTheme(), onChange, () =>
-			done(undefined),
+		const settingsList = new SettingsList(
+			items,
+			items.length + 2,
+			getSettingsListTheme(),
+			onChange,
+			() => done(undefined),
 		);
 		listRef = settingsList;
 		container.addChild(settingsList);
 
-		container.addChild(new Text(theme.fg("dim", `project: ${projectConfigPath(ctx.cwd)}`), 1, 0));
-		container.addChild(new Text(theme.fg("dim", `global:   ${globalConfigPath()}`), 1, 0));
-		container.addChild(new Text(theme.fg("dim", "↑↓/jk 移动 · enter/space 修改 · esc 关闭"), 1, 0));
+		container.addChild(
+			new Text(theme.fg("dim", `project: ${projectConfigPath(ctx.cwd)}`), 1, 0),
+		);
+		container.addChild(
+			new Text(theme.fg("dim", `global:   ${globalConfigPath()}`), 1, 0),
+		);
+		container.addChild(
+			new Text(theme.fg("dim", "↑↓/jk 移动 · enter/space 修改 · esc 关闭"), 1, 0),
+		);
 
 		return {
 			render: (width) => container.render(width),
