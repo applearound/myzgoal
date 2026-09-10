@@ -6,7 +6,13 @@
 
 import { randomUUID } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai";
+import type {
+	Api,
+	AssistantMessage,
+	Model,
+	Usage,
+} from "@earendil-works/pi-ai";
+import { loadEffectiveConfig } from "./config.js";
 
 export type Verdict = "met" | "not_yet" | "impossible";
 
@@ -52,7 +58,12 @@ function extractText(content: unknown): string {
 	if (!Array.isArray(content)) return "";
 	const parts: string[] = [];
 	for (const part of content as ContentPart[]) {
-		if (part && typeof part === "object" && part.type === "text" && typeof part.text === "string") {
+		if (
+			part &&
+			typeof part === "object" &&
+			part.type === "text" &&
+			typeof part.text === "string"
+		) {
 			parts.push(part.text);
 		}
 	}
@@ -73,7 +84,9 @@ function buildTranscript(branch: readonly BranchEntry[]): string {
 			if (Array.isArray(content)) {
 				for (const part of content as ContentPart[]) {
 					if (part?.type === "toolCall" && part.name) {
-						lines.push(`[assistant tool call] ${part.name}(${JSON.stringify(part.arguments ?? {})})`);
+						lines.push(
+							`[assistant tool call] ${part.name}(${JSON.stringify(part.arguments ?? {})})`,
+						);
 					}
 				}
 			}
@@ -90,7 +103,9 @@ function buildTranscript(branch: readonly BranchEntry[]): string {
 		const line = lines[i];
 		const size = Buffer.byteLength(line, "utf8") + 1;
 		if (total + size > TRANSCRIPT_BYTE_BUDGET && kept.length > 0) {
-			kept.unshift(`[... transcript truncated, showing the most recent ${kept.length} of ${lines.length} messages ...]`);
+			kept.unshift(
+				`[... transcript truncated, showing the most recent ${kept.length} of ${lines.length} messages ...]`,
+			);
 			break;
 		}
 		total += size;
@@ -100,37 +115,49 @@ function buildTranscript(branch: readonly BranchEntry[]): string {
 }
 
 /**
- * Pick the evaluator model: explicit setting via MYZGOAL_EVALUATOR_MODEL
- * ("provider/model-id"), otherwise the cheapest authenticated model,
- * otherwise the session's current model.
+ * Pick the evaluator model: explicit setting (MYZGOAL_EVALUATOR_MODEL env or
+ * evaluatorModel in project/global config, "provider/model-id"), otherwise the
+ * cheapest authenticated model, otherwise the session's current model.
  */
 export function pickEvaluatorModel(
 	ctx: ExtensionContext,
 ): { model: Model<Api>; source: string } | { error: string } {
 	const registry = ctx.modelRegistry;
 
-	const configured = process.env.MYZGOAL_EVALUATOR_MODEL;
+	const effective = loadEffectiveConfig(ctx);
+	const configured = effective.evaluatorModel.value;
 	if (configured) {
+		const label =
+			effective.evaluatorModel.source === "env"
+				? "MYZGOAL_EVALUATOR_MODEL"
+				: `evaluatorModel (${effective.evaluatorModel.source})`;
 		const [provider, ...rest] = configured.split("/");
 		const modelId = rest.join("/");
 		const model = registry.find(provider, modelId);
-		if (!model) return { error: `MYZGOAL_EVALUATOR_MODEL "${configured}" not found` };
+		if (!model) return { error: `${label} "${configured}" not found` };
 		if (!registry.hasConfiguredAuth(model)) {
-			return { error: `No authentication configured for "${configured}"` };
+			return { error: `No authentication configured for "${configured}" (${label})` };
 		}
-		return { model, source: "MYZGOAL_EVALUATOR_MODEL" };
+		return { model, source: label };
 	}
 
-	const available = registry.getAvailable().filter((m) => registry.hasConfiguredAuth(m));
+	const available = registry
+		.getAvailable()
+		.filter((m) => registry.hasConfiguredAuth(m));
 	if (available.length === 0) {
 		if (ctx.model && registry.hasConfiguredAuth(ctx.model)) {
-			return { model: ctx.model, source: "session model (no alternatives available)" };
+			return {
+				model: ctx.model,
+				source: "session model (no alternatives available)",
+			};
 		}
 		return { error: "No authenticated model available for evaluation" };
 	}
 	const cheapest = [...available].sort((a, b) => a.cost.input - b.cost.input)[0];
 	if (process.env.MYZGOAL_DEBUG) {
-		process.stderr.write(`[myzgoal] evaluator model: ${cheapest.provider}/${cheapest.id} (cheapest of ${available.length} authenticated)\n`);
+		process.stderr.write(
+			`[myzgoal] evaluator model: ${cheapest.provider}/${cheapest.id} (cheapest of ${available.length} authenticated)\n`,
+		);
 	}
 	return { model: cheapest, source: "cheapest authenticated model" };
 }
@@ -140,8 +167,12 @@ export function pickEvaluatorModel(
  * on every request. Nested complete() calls do not get pi's automatic
  * attribution headers, so mirror pi's own rule (provider id or host) here.
  */
-function attributionHeaders(model: Model<Api>, sessionId: string): Record<string, string> | undefined {
-	let isOpencode = model.provider === "opencode" || model.provider === "opencode-go";
+function attributionHeaders(
+	model: Model<Api>,
+	sessionId: string,
+): Record<string, string> | undefined {
+	let isOpencode =
+		model.provider === "opencode" || model.provider === "opencode-go";
 	if (!isOpencode) {
 		try {
 			isOpencode = new URL(model.baseUrl).hostname === "opencode.ai";
@@ -152,23 +183,37 @@ function attributionHeaders(model: Model<Api>, sessionId: string): Record<string
 	return isOpencode ? { "x-opencode-session": sessionId } : undefined;
 }
 
-function parseVerdict(text: string): { verdict: Verdict; reason: string } | { error: string } {
+function parseVerdict(
+	text: string,
+): { verdict: Verdict; reason: string } | { error: string } {
 	// Strip code fences if the model added them anyway.
-	const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+	const cleaned = text
+		.trim()
+		.replace(/^```(?:json)?\s*/i, "")
+		.replace(/\s*```$/, "");
 	const start = cleaned.indexOf("{");
 	const end = cleaned.lastIndexOf("}");
-	if (start === -1 || end <= start) return { error: `Evaluator returned non-JSON output: ${text.slice(0, 200)}` };
+	if (start === -1 || end <= start)
+		return { error: `Evaluator returned non-JSON output: ${text.slice(0, 200)}` };
 
 	try {
-		const parsed = JSON.parse(cleaned.slice(start, end + 1)) as { verdict?: string; reason?: string };
+		const parsed = JSON.parse(cleaned.slice(start, end + 1)) as {
+			verdict?: string;
+			reason?: string;
+		};
 		const verdict = parsed.verdict;
 		if (verdict !== "met" && verdict !== "not_yet" && verdict !== "impossible") {
 			return { error: `Unknown verdict "${verdict}"` };
 		}
-		const reason = typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim() : "(no reason given)";
+		const reason =
+			typeof parsed.reason === "string" && parsed.reason.trim()
+				? parsed.reason.trim()
+				: "(no reason given)";
 		return { verdict, reason };
 	} catch (err) {
-		return { error: `Failed to parse evaluator output: ${err instanceof Error ? err.message : String(err)}` };
+		return {
+			error: `Failed to parse evaluator output: ${err instanceof Error ? err.message : String(err)}`,
+		};
 	}
 }
 
@@ -177,7 +222,9 @@ export async function evaluateGoal(
 	model: Model<Api>,
 	ctx: ExtensionContext,
 ): Promise<EvaluationResult> {
-	const transcript = buildTranscript(ctx.sessionManager.getBranch() as BranchEntry[]);
+	const transcript = buildTranscript(
+		ctx.sessionManager.getBranch() as BranchEntry[],
+	);
 	const userPrompt = [
 		`GOAL CONDITION:\n${goal.condition}`,
 		`CONVERSATION TRANSCRIPT (most recent last):\n${transcript || "(empty)"}`,
@@ -214,13 +261,19 @@ export async function evaluateGoal(
 		}
 		if (response.stopReason === "error") {
 			const errText = extractText(response.content);
-			throw new Error(`Evaluator model returned an error${errText ? `: ${errText}` : " (no detail)"}`);
+			throw new Error(
+				`Evaluator model returned an error${errText ? `: ${errText}` : " (no detail)"}`,
+			);
 		}
 
 		const text = extractText(response.content);
 		const parsed = parseVerdict(text);
 		if ("error" in parsed) throw new Error(parsed.error);
-		return { verdict: parsed.verdict, reason: parsed.reason, usage: response.usage };
+		return {
+			verdict: parsed.verdict,
+			reason: parsed.reason,
+			usage: response.usage,
+		};
 	} finally {
 		clearTimeout(timer);
 	}

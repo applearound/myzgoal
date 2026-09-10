@@ -8,7 +8,12 @@
  * the work is done.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { openConfig } from "./config-ui.js";
+import { loadEffectiveConfig } from "./config.js";
 import { evaluateGoal, pickEvaluatorModel } from "./evaluator.js";
 import {
 	ENTRY_ACHIEVED,
@@ -30,8 +35,14 @@ import {
 	type ResolvedGoalRecord,
 } from "./state.js";
 
-const CLEAR_ALIASES = new Set(["clear", "stop", "off", "reset", "none", "cancel"]);
-const DEFAULT_NO_PROGRESS_LIMIT = 3;
+const CLEAR_ALIASES = new Set([
+	"clear",
+	"stop",
+	"off",
+	"reset",
+	"none",
+	"cancel",
+]);
 
 type BranchEntry = {
 	type?: string;
@@ -49,16 +60,6 @@ type ContentPart = {
 	name?: string;
 };
 
-function noProgressLimit(): number {
-	const parsed = Number.parseInt(process.env.MYZGOAL_NO_PROGRESS_LIMIT ?? "", 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_NO_PROGRESS_LIMIT;
-}
-
-function maxTurns(): number | null {
-	const parsed = Number.parseInt(process.env.MYZGOAL_MAX_TURNS ?? "", 10);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
 /** Whether the most recent agent run (entries after the last user message) used any tools. */
 function lastRunHadToolUse(branch: readonly BranchEntry[]): boolean {
 	for (let i = branch.length - 1; i >= 0; i--) {
@@ -67,7 +68,11 @@ function lastRunHadToolUse(branch: readonly BranchEntry[]): boolean {
 		const { role, content } = entry.message;
 		if (role === "user") break;
 		if (role === "toolResult") return true;
-		if (role === "assistant" && Array.isArray(content) && (content as ContentPart[]).some((p) => p?.type === "toolCall")) {
+		if (
+			role === "assistant" &&
+			Array.isArray(content) &&
+			(content as ContentPart[]).some((p) => p?.type === "toolCall")
+		) {
 			return true;
 		}
 	}
@@ -75,15 +80,22 @@ function lastRunHadToolUse(branch: readonly BranchEntry[]): boolean {
 }
 
 /** Validate persisted resolved-goal entry data (entries come from the session file, shape is untrusted). */
-function parseResolvedGoalRecord(data: Record<string, unknown>): ResolvedGoalRecord | null {
-	if (typeof data.condition !== "string" || typeof data.setAt !== "number" || typeof data.resolvedAt !== "number") {
+function parseResolvedGoalRecord(
+	data: Record<string, unknown>,
+): ResolvedGoalRecord | null {
+	if (
+		typeof data.condition !== "string" ||
+		typeof data.setAt !== "number" ||
+		typeof data.resolvedAt !== "number"
+	) {
 		return null;
 	}
 	return {
 		condition: data.condition,
 		setAt: data.setAt,
 		resolvedAt: data.resolvedAt,
-		turnsEvaluated: typeof data.turnsEvaluated === "number" ? data.turnsEvaluated : 0,
+		turnsEvaluated:
+			typeof data.turnsEvaluated === "number" ? data.turnsEvaluated : 0,
 		tokensSpent: typeof data.tokensSpent === "number" ? data.tokensSpent : 0,
 		reason: typeof data.reason === "string" ? data.reason : undefined,
 	};
@@ -115,7 +127,11 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	const notify = (ctx: ExtensionContext, message: string, level: "info" | "warning" | "error" = "info"): void => {
+	const notify = (
+		ctx: ExtensionContext,
+		message: string,
+		level: "info" | "warning" | "error" = "info",
+	): void => {
 		if (ctx.hasUI) ctx.ui.notify(message, level);
 	};
 
@@ -133,7 +149,10 @@ export default function (pi: ExtensionAPI) {
 			tokensSpent: goal.tokensSpent,
 			reason,
 		};
-		pi.appendEntry(outcome === "achieved" ? ENTRY_ACHIEVED : ENTRY_FAILED, record);
+		pi.appendEntry(
+			outcome === "achieved" ? ENTRY_ACHIEVED : ENTRY_FAILED,
+			record,
+		);
 		lastResolved = record;
 		goal = null;
 		updateWidget(ctx);
@@ -216,11 +235,12 @@ export default function (pi: ExtensionAPI) {
 		if (lastAssistantAborted(branch)) return; // user interrupted; do not fight them
 
 		// No-progress guard: agent keeps answering without doing anything.
+		const effective = loadEffectiveConfig(ctx);
 		if (lastRunHadToolUse(branch)) {
 			noProgressTurns = 0;
 		} else {
 			noProgressTurns++;
-			if (noProgressTurns >= noProgressLimit()) {
+			if (noProgressTurns >= effective.noProgressLimit.value) {
 				goal.loopPaused = true;
 				updateWidget(ctx);
 				notify(
@@ -233,11 +253,15 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// Optional hard turn cap.
-		const cap = maxTurns();
+		const cap = effective.maxTurns.value;
 		if (cap !== null && goal.turnsEvaluated >= cap) {
 			goal.loopPaused = true;
 			updateWidget(ctx);
-			notify(ctx, `◎ /goal loop paused: reached MYZGOAL_MAX_TURNS=${cap}. The goal stays active — send a prompt to resume.`, "warning");
+			notify(
+				ctx,
+				`◎ /goal loop paused: reached MYZGOAL_MAX_TURNS=${cap}. The goal stays active — send a prompt to resume.`,
+				"warning",
+			);
 			return;
 		}
 
@@ -247,7 +271,11 @@ export default function (pi: ExtensionAPI) {
 			if ("error" in picked) {
 				goal.loopPaused = true;
 				updateWidget(ctx);
-				notify(ctx, `◎ /goal loop paused: ${picked.error}. The goal stays active — fix the issue and send a prompt to resume.`, "warning");
+				notify(
+					ctx,
+					`◎ /goal loop paused: ${picked.error}. The goal stays active — fix the issue and send a prompt to resume.`,
+					"warning",
+				);
 				return;
 			}
 
@@ -257,7 +285,11 @@ export default function (pi: ExtensionAPI) {
 			goal.lastReason = result.reason;
 
 			if (result.verdict === "not_yet") {
-				pi.appendEntry(ENTRY_VERDICT, { verdict: result.verdict, reason: result.reason, turn: goal.turnsEvaluated });
+				pi.appendEntry(ENTRY_VERDICT, {
+					verdict: result.verdict,
+					reason: result.reason,
+					turn: goal.turnsEvaluated,
+				});
 				updateWidget(ctx);
 				pi.sendUserMessage(
 					`Your /goal is not yet met: "${goal.condition}"\n\n` +
@@ -274,14 +306,19 @@ export default function (pi: ExtensionAPI) {
 			goal.loopPaused = true;
 			updateWidget(ctx);
 			const message = err instanceof Error ? err.message : String(err);
-			notify(ctx, `◎ /goal loop paused: evaluator error — ${message}. The goal stays active — send a prompt to resume.`, "error");
+			notify(
+				ctx,
+				`◎ /goal loop paused: evaluator error — ${message}. The goal stays active — send a prompt to resume.`,
+				"error",
+			);
 		} finally {
 			evaluating = false;
 		}
 	});
 
 	pi.registerCommand("goal", {
-		description: "Set a goal: pi keeps working across turns until the condition is met (/goal <condition>, /goal for status, /goal clear to remove)",
+		description:
+			"Set a goal: pi keeps working across turns until the condition is met (/goal <condition>, /goal for status, /goal clear to remove)",
 		handler: async (args, ctx) => {
 			const arg = (args ?? "").trim();
 
@@ -292,8 +329,10 @@ export default function (pi: ExtensionAPI) {
 						`◎ /goal active: ${goal.condition}`,
 						`Running for ${formatDuration(goal.setAt)} · ${goal.turnsEvaluated} turns evaluated · ${formatCost(goal.tokensSpent)} evaluator spend`,
 					];
-					if (goal.loopPaused) lines.push("Loop paused — send a prompt to resume evaluation.");
-					if (goal.lastReason) lines.push(`Latest evaluator reason: ${goal.lastReason}`);
+					if (goal.loopPaused)
+						lines.push("Loop paused — send a prompt to resume evaluation.");
+					if (goal.lastReason)
+						lines.push(`Latest evaluator reason: ${goal.lastReason}`);
 					notify(ctx, lines.join("\n"));
 				} else if (lastResolved) {
 					notify(
@@ -301,7 +340,10 @@ export default function (pi: ExtensionAPI) {
 						`No goal active. Last resolved goal: ${lastResolved.condition} · ${lastResolved.turnsEvaluated} turns · ${formatCost(lastResolved.tokensSpent)}`,
 					);
 				} else {
-					notify(ctx, "No goal set. Usage: /goal <condition> — e.g. /goal all tests pass and lint is clean");
+					notify(
+						ctx,
+						"No goal set. Usage: /goal <condition> — e.g. /goal all tests pass and lint is clean",
+					);
 				}
 				return;
 			}
@@ -321,7 +363,11 @@ export default function (pi: ExtensionAPI) {
 
 			// Set (replaces any active goal)
 			if (arg.length > MAX_CONDITION_LENGTH) {
-				notify(ctx, `Condition too long: ${arg.length} chars (max ${MAX_CONDITION_LENGTH}).`, "error");
+				notify(
+					ctx,
+					`Condition too long: ${arg.length} chars (max ${MAX_CONDITION_LENGTH}).`,
+					"error",
+				);
 				return;
 			}
 			goal = createGoal(arg);
@@ -331,6 +377,13 @@ export default function (pi: ExtensionAPI) {
 			updateWidget(ctx);
 			// Start a turn immediately, with the condition itself as the directive.
 			pi.sendUserMessage(arg, goal ? { deliverAs: "followUp" } : undefined);
+		},
+	});
+
+	pi.registerCommand("goal-config", {
+		description: "Open myzgoal settings: evaluator model, turn cap, no-progress threshold",
+		handler: async (_args, ctx) => {
+			await openConfig(ctx);
 		},
 	});
 }
