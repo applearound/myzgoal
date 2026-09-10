@@ -71,7 +71,7 @@ Run `/goal-config` to open an interactive settings panel (SettingsList):
 
 | Setting | Meaning |
 | --- | --- |
-| 评估模型 | Evaluator model — pick from authenticated models (cheapest first), or `(auto)` |
+| 评估模型 | Evaluator model — type to fuzzy-filter, pick from authenticated models (cheapest first), or `(auto)` |
 | 评估次数上限 | Pause the loop after N evaluator runs (`unlimited` to disable) |
 | 无进展阈值 | Consecutive tool-less turns before the loop pauses |
 | 写入位置 | Whether edits go to the project or global config file |

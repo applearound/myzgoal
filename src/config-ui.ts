@@ -7,7 +7,6 @@
  */
 
 import {
-	DynamicBorder,
 	getSettingsListTheme,
 	type ExtensionContext,
 	type Theme,
@@ -20,6 +19,9 @@ import {
 	type SettingItem,
 	SettingsList,
 	Text,
+	Input,
+	fuzzyFilter,
+	getKeybindings,
 } from "@earendil-works/pi-tui";
 import {
 	globalConfigPath,
@@ -64,9 +66,10 @@ function noProgressDisplay(
 	return `${eff.noProgressLimit.value} · ${SOURCE_TAG[eff.noProgressLimit.source]}`;
 }
 
-/** Model picker submenu: "(auto)" plus authenticated models, cheapest first. */
+/** Model picker submenu: search box (fuzzy) + "(auto)" + authenticated models, cheapest first. */
 function buildModelPicker(
 	ctx: ExtensionContext,
+	requestRender: () => void,
 	done: (selectedValue?: string) => void,
 ): Component {
 	const theme: Theme = ctx.ui.theme;
@@ -76,7 +79,7 @@ function buildModelPicker(
 		.sort((a, b) => a.cost.input - b.cost.input)
 		.slice(0, 30);
 
-	const items: SelectItem[] = [
+	const allItems: SelectItem[] = [
 		{ value: "", label: "(auto)", description: "自动选择最便宜的已认证模型" },
 		...models.map((m) => ({
 			value: `${m.provider}/${m.id}`,
@@ -88,40 +91,73 @@ function buildModelPicker(
 		})),
 	];
 
-	const container = new Container();
-	container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
-	container.addChild(
-		new Text(theme.fg("accent", theme.bold("选择评估模型")), 1, 0),
-	);
+	const selectTheme = {
+		selectedPrefix: (t: string) => theme.fg("accent", t),
+		selectedText: (t: string) => theme.fg("accent", t),
+		description: (t: string) => theme.fg("muted", t),
+		scrollInfo: (t: string) => theme.fg("dim", t),
+		noMatch: (t: string) => theme.fg("warning", t),
+	};
 
-	const list = new SelectList(
-		items,
-		Math.min(items.length, 12),
-		{
-			selectedPrefix: (t) => theme.fg("accent", t),
-			selectedText: (t) => theme.fg("accent", t),
-			description: (t) => theme.fg("muted", t),
-			scrollInfo: (t) => theme.fg("dim", t),
-			noMatch: (t) => theme.fg("warning", t),
-		},
-		// Let the primary (id) column grow well beyond the 32-char default;
-		// narrow terminals still clamp it to the available width.
-		{ maxPrimaryColumnWidth: 60 },
-	);
-	list.onSelect = (item) => done(item.value); // "" = auto → key deleted
-	list.onCancel = () => done(undefined);
-	container.addChild(list);
+	// Fuzzy-match against the full provider/id plus the description, so both
+	// "openc" and "glm" tokens hit the same entry.
+	const filterItems = (query: string): SelectItem[] => {
+		const q = query.trim();
+		if (!q) return allItems;
+		return fuzzyFilter(allItems, q, (it) => `${it.value} ${it.description ?? ""}`);
+	};
 
-	container.addChild(
-		new Text(theme.fg("dim", "↑↓ 选择 · enter 确认 · esc 取消"), 1, 0),
-	);
-	container.addChild(new DynamicBorder((s) => theme.fg("accent", s)));
+	const searchInput = new Input({ prompt: "搜索: " });
+
+	const createList = (items: SelectItem[]): SelectList => {
+		const list = new SelectList(
+			items,
+			Math.min(items.length, 12),
+			selectTheme,
+			// Let the primary (id) column grow well beyond the 32-char default;
+			// narrow terminals still clamp it to the available width.
+			{ maxPrimaryColumnWidth: 60 },
+		);
+		list.onSelect = (item) => done(item.value); // "" = auto → key deleted
+		list.onCancel = () => done(undefined);
+		return list;
+	};
+	let list = createList(filterItems(""));
 
 	return {
-		render: (width) => container.render(width),
-		invalidate: () => container.invalidate(),
+		render: (width) => {
+			const line = theme.fg("border", "─".repeat(Math.max(0, width)));
+			return [
+				line,
+				theme.fg("accent", theme.bold(" 选择评估模型")),
+				"",
+				...searchInput.render(width),
+				...list.render(width),
+				"",
+				theme.fg("dim", " 输入即模糊筛选 · ↑↓ 选择 · enter 确认 · esc 取消"),
+				line,
+			];
+		},
+		invalidate: () => {
+			searchInput.invalidate();
+			list.invalidate();
+		},
 		handleInput: (data) => {
-			list.handleInput(data);
+			const kb = getKeybindings();
+			if (
+				kb.matches(data, "tui.select.up") ||
+				kb.matches(data, "tui.select.down") ||
+				kb.matches(data, "tui.select.confirm") ||
+				kb.matches(data, "tui.select.cancel")
+			) {
+				list.handleInput(data);
+			} else {
+				// Everything else (printable chars, backspace, paste) feeds the
+				// search box; the list is rebuilt from the fuzzy-filtered set.
+				searchInput.handleInput(data);
+				list = createList(filterItems(searchInput.getValue()));
+			}
+			requestRender();
 		},
 	};
 }
@@ -133,12 +169,14 @@ export async function openConfig(ctx: ExtensionContext): Promise<void> {
 	let listRef: SettingsList | undefined;
 	let currentEff = loadEffectiveConfig(ctx);
 
+let requestRender: () => void = () => {};
+
 	const evaluatorModelItem: SettingItem = {
 		id: "evaluatorModel",
 		label: "评估模型",
 		description: "独立评估器使用的模型;auto = 最便宜的已认证模型",
 		currentValue: modelDisplay(currentEff),
-		submenu: (_currentValue, done) => buildModelPicker(ctx, done),
+		submenu: (_currentValue, done) => buildModelPicker(ctx, () => requestRender(), done),
 	};
 	/** Keep the full provider/id visible even when the row value is short. */
 	const syncEvaluatorModelDescription = (): void => {
@@ -215,7 +253,8 @@ export async function openConfig(ctx: ExtensionContext): Promise<void> {
 		}
 	};
 
-	await ctx.ui.custom((_tui, theme, _kb, done) => {
+	await ctx.ui.custom((tui, theme, _kb, done) => {
+		requestRender = () => tui.requestRender();
 		const container = new Container();
 		container.addChild(
 			new Text(theme.fg("accent", theme.bold("myzgoal 设置")), 1, 0),
